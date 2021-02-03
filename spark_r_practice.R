@@ -1,0 +1,151 @@
+###########################################################################
+#
+# Interacting with Spark in R
+#--------------------------------------------------------------------------
+#
+# Created by K. Aagaard
+#
+# Modified:  
+# 03 February 2021
+# By: Kevin Aagaard
+#
+###########################################################################
+
+# Initialize settings (workspace, directory, etc.) ------------------------
+
+#Clear the workspace
+rm(
+  list = 
+    ls()
+)
+
+#Clear the console
+cat(
+  '\014'
+)
+
+#Set seed for random number generation
+set.seed(123)
+
+#Include necessary libraries
+x = 
+  c(
+    "sparklyr",
+    "nycflights13",
+    "Lahman",
+    "dplyr",
+    "ggplot2",
+    "DBI"
+  )
+
+# # If you don't know if you've installed the packages for some of these 
+# # libraries, run this:
+# install.packages(x)
+
+# # `emo` not available for R traditionally
+# devtools::install_github("hadley/emo")
+
+lapply(
+  x, 
+  library, 
+  character.only = TRUE
+)
+
+rm(
+  x
+)
+
+#Set working directory (should be universal)
+setwd(
+  dirname(
+    rstudioapi::callFun(
+      "getActiveDocumentContext"
+    )$path
+  )
+)
+
+getwd()
+
+# Install local version of Spark
+spark_install(version = "2.1.0")
+
+
+#
+# Data --------------------------------------------------------------------
+# Connect to spark
+sc <- spark_connect(master = "local")
+
+#+++++++++++++++++
+# Example datasets
+#+++++++++++++++++
+
+iris_tbl = copy_to(sc, iris)
+flights_tbl = copy_to(sc, nycflights13::flights, "flights")
+batting_tbl = copy_to(sc, Lahman::Batting, "batting")
+src_tbls(sc)
+
+# Filter by departure delay and print the first few records
+flights_tbl %>% filter(dep_delay == 2)
+
+delay = flights_tbl %>%
+  group_by(tailnum) %>%
+  summarise(count = n(), dist = mean(distance), delay = mean(arr_delay)) %>%
+  filter(count > 20, dist < 2000, !is.na(delay)) %>%
+  collect
+
+# Plot delays
+ggplot(delay, aes(dist, delay)) +
+  geom_point(aes(size = count), alpha = 1/2) +
+  geom_smooth() +
+  scale_size_area(max_size = 2)
+
+# Window functions
+batting_tbl %>%
+  select(playerID, yearID, teamID, G, AB:H) %>%
+  arrange(playerID, yearID, teamID) %>%
+  group_by(playerID) %>%
+  filter(min_rank(desc(H)) <= 2 & H > 0)
+
+# SQL in Spark cluster
+iris_preview = dbGetQuery(sc, "SELECT * FROM iris LIMIT 10")
+iris_preview
+
+#+++++++++++++++++
+# Machine Learning
+#+++++++++++++++++
+
+# Copy mtcars into spark
+mtcars_tbl = copy_to(sc, mtcars)
+
+# transform our data set, and then partition into 'training', 'test'
+partitions = mtcars_tbl %>%
+  filter(hp >= 100) %>%
+  mutate(cyl8 = cyl == 8) %>%
+  sdf_random_split(training = 0.5, test = 0.5, seed = 1099)
+
+# fit a linear model to the training dataset
+fit = partitions$training %>%
+  ml_linear_regression(response = "mpg", features = c("wt", "cyl"))
+fit
+
+summary(fit)
+
+#++++++++++++++++
+# Read/Write Data
+#++++++++++++++++
+temp_csv = tempfile(fileext = ".csv")
+temp_parquet = tempfile(fileext = ".parquet")
+temp_json = tempfile(fileext = ".json")
+
+spark_write_csv(iris_tbl, temp_csv)
+iris_csv_tbl = spark_read_csv(sc, "iris_csv", temp_csv)
+
+spark_write_parquet(iris_tbl, temp_parquet)
+iris_parquet_tbl = spark_read_parquet(sc, "iris_parquet", temp_parquet)
+
+spark_write_json(iris_tbl, temp_json)
+iris_json_tbl = spark_read_json(sc, "iris_json", temp_json)
+
+src_tbls(sc)
+
+#
